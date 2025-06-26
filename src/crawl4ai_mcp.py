@@ -43,10 +43,13 @@ from utils import (
 )
 
 # Import knowledge graph modules
-from knowledge_graph_validator import KnowledgeGraphValidator
-from parse_repo_into_neo4j import DirectNeo4jExtractor
-from ai_script_analyzer import AIScriptAnalyzer
-from hallucination_reporter import HallucinationReporter
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from knowledge_graphs.comprehensive_validator import ComprehensiveValidator as KnowledgeGraphValidator
+from knowledge_graphs.parse_repo_into_neo4j import DirectNeo4jExtractor
+from knowledge_graphs.ts_knowledge_graph_validator import TSKnowledgeGraphValidator, validate_ts_script
 
 # Load environment variables from the project root .env file
 project_root = Path(__file__).resolve().parent.parent
@@ -76,7 +79,7 @@ def format_neo4j_error(error: Exception) -> str:
     else:
         return f"Neo4j error: {str(error)}"
 
-def validate_script_path(script_path: str) -> Dict[str, Any]:
+def validate_script_path(script_path: str, supported_extensions: List[str] = None) -> Dict[str, Any]:
     """Validate script path and return error info if invalid."""
     if not script_path or not isinstance(script_path, str):
         return {"valid": False, "error": "Script path is required"}
@@ -84,16 +87,32 @@ def validate_script_path(script_path: str) -> Dict[str, Any]:
     if not os.path.exists(script_path):
         return {"valid": False, "error": f"Script not found: {script_path}"}
     
-    if not script_path.endswith('.py'):
-        return {"valid": False, "error": "Only Python (.py) files are supported"}
+    # Default to Python files if no extensions specified
+    if supported_extensions is None:
+        supported_extensions = ['.py']
+    
+    file_ext = Path(script_path).suffix.lower()
+    if file_ext not in supported_extensions:
+        return {"valid": False, "error": f"Unsupported file type. Supported: {', '.join(supported_extensions)}"}
     
     try:
         # Check if file is readable
         with open(script_path, 'r', encoding='utf-8') as f:
             f.read(1)  # Read first character to test
-        return {"valid": True}
+        return {"valid": True, "language": _detect_language_from_extension(file_ext)}
     except Exception as e:
         return {"valid": False, "error": f"Cannot read script file: {str(e)}"}
+
+def _detect_language_from_extension(file_ext: str) -> str:
+    """Detect programming language from file extension"""
+    ext_map = {
+        '.py': 'python',
+        '.js': 'javascript', 
+        '.jsx': 'javascript',
+        '.ts': 'typescript',
+        '.tsx': 'typescript'
+    }
+    return ext_map.get(file_ext.lower(), 'unknown')
 
 def validate_github_url(repo_url: str) -> Dict[str, Any]:
     """Validate GitHub repository URL."""
@@ -121,6 +140,7 @@ class Crawl4AIContext:
     reranking_model: Optional[CrossEncoder] = None
     knowledge_validator: Optional[Any] = None  # KnowledgeGraphValidator when available
     repo_extractor: Optional[Any] = None       # DirectNeo4jExtractor when available
+    comprehensive_validator: Optional[Any] = None  # ComprehensiveValidator when available
 
 @asynccontextmanager
 async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
@@ -143,7 +163,7 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
     crawler = AsyncWebCrawler(config=browser_config)
     await crawler.__aenter__()
     
-    # Initialize Supabase client
+    # Initialize Supabase client (may be None if not configured)
     supabase_client = get_supabase_client()
     
     # Initialize cross-encoder model for reranking if enabled
@@ -181,10 +201,22 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
                 await repo_extractor.initialize()
                 print("✓ Repository extractor initialized")
                 
+                # Initialize comprehensive validator
+                comprehensive_validator = ComprehensiveValidator(
+                    neo4j_uri=neo4j_uri,
+                    neo4j_user=neo4j_user,
+                    neo4j_password=neo4j_password,
+                    supabase_url=os.getenv("SUPABASE_URL"),
+                    supabase_key=os.getenv("SUPABASE_ANON_KEY")
+                )
+                await comprehensive_validator.initialize()
+                print("✓ Comprehensive validator initialized")
+                
             except Exception as e:
                 print(f"Failed to initialize Neo4j components: {format_neo4j_error(e)}")
                 knowledge_validator = None
                 repo_extractor = None
+                comprehensive_validator = None
         else:
             print("Neo4j credentials not configured - knowledge graph tools will be unavailable")
     else:
@@ -196,7 +228,8 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
             supabase_client=supabase_client,
             reranking_model=reranking_model,
             knowledge_validator=knowledge_validator,
-            repo_extractor=repo_extractor
+            repo_extractor=repo_extractor,
+            comprehensive_validator=comprehensive_validator
         )
     finally:
         # Clean up all components
@@ -213,6 +246,12 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
                 print("✓ Repository extractor closed")
             except Exception as e:
                 print(f"Error closing repository extractor: {e}")
+        if comprehensive_validator:
+            try:
+                await comprehensive_validator.close()
+                print("✓ Comprehensive validator closed")
+            except Exception as e:
+                print(f"Error closing comprehensive validator: {e}")
 
 # Initialize FastMCP server
 mcp = FastMCP(
@@ -445,12 +484,16 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
             # Create url_to_full_document mapping
             url_to_full_document = {url: result.markdown}
             
-            # Update source information FIRST (before inserting documents)
-            source_summary = extract_source_summary(source_id, result.markdown[:5000])  # Use first 5000 chars for summary
-            update_source_info(supabase_client, source_id, source_summary, total_word_count)
-            
-            # Add documentation chunks to Supabase (AFTER source exists)
-            add_documents_to_supabase(supabase_client, urls, chunk_numbers, contents, metadatas, url_to_full_document)
+            # Update source information and add documents only if Supabase is available
+            if supabase_client:
+                # Update source information FIRST (before inserting documents)
+                source_summary = extract_source_summary(source_id, result.markdown[:5000])  # Use first 5000 chars for summary
+                update_source_info(supabase_client, source_id, source_summary, total_word_count)
+                
+                # Add documentation chunks to Supabase (AFTER source exists)
+                add_documents_to_supabase(supabase_client, urls, chunk_numbers, contents, metadatas, url_to_full_document)
+            else:
+                print("⚠️ Warning: Supabase not configured - documents will not be stored")
             
             # Extract and process code examples only if enabled
             extract_code_examples = os.getenv("USE_AGENTIC_RAG", "false") == "true"
@@ -489,15 +532,18 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
                         }
                         code_metadatas.append(code_meta)
                     
-                    # Add code examples to Supabase
-                    add_code_examples_to_supabase(
-                        supabase_client, 
-                        code_urls, 
-                        code_chunk_numbers, 
-                        code_examples, 
-                        code_summaries, 
-                        code_metadatas
-                    )
+                    # Add code examples to Supabase only if available
+                    if supabase_client:
+                        add_code_examples_to_supabase(
+                            supabase_client, 
+                            code_urls, 
+                            code_chunk_numbers, 
+                            code_examples, 
+                            code_summaries, 
+                            code_metadatas
+                        )
+                    else:
+                        print("⚠️ Warning: Supabase not configured - code examples will not be stored")
             
             return json.dumps({
                 "success": True,
@@ -633,18 +679,22 @@ async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concur
         for doc in crawl_results:
             url_to_full_document[doc['url']] = doc['markdown']
         
-        # Update source information for each unique source FIRST (before inserting documents)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            source_summary_args = [(source_id, content) for source_id, content in source_content_map.items()]
-            source_summaries = list(executor.map(lambda args: extract_source_summary(args[0], args[1]), source_summary_args))
-        
-        for (source_id, _), summary in zip(source_summary_args, source_summaries):
-            word_count = source_word_counts.get(source_id, 0)
-            update_source_info(supabase_client, source_id, summary, word_count)
-        
-        # Add documentation chunks to Supabase (AFTER sources exist)
-        batch_size = 20
-        add_documents_to_supabase(supabase_client, urls, chunk_numbers, contents, metadatas, url_to_full_document, batch_size=batch_size)
+        # Update source information and add documents only if Supabase is available
+        if supabase_client:
+            # Update source information for each unique source FIRST (before inserting documents)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                source_summary_args = [(source_id, content) for source_id, content in source_content_map.items()]
+                source_summaries = list(executor.map(lambda args: extract_source_summary(args[0], args[1]), source_summary_args))
+            
+            for (source_id, _), summary in zip(source_summary_args, source_summaries):
+                word_count = source_word_counts.get(source_id, 0)
+                update_source_info(supabase_client, source_id, summary, word_count)
+            
+            # Add documentation chunks to Supabase (AFTER sources exist)
+            batch_size = 20
+            add_documents_to_supabase(supabase_client, urls, chunk_numbers, contents, metadatas, url_to_full_document, batch_size=batch_size)
+        else:
+            print("⚠️ Warning: Supabase not configured - documents will not be stored")
         
         # Extract and process code examples from all documents only if enabled
         extract_code_examples_enabled = os.getenv("USE_AGENTIC_RAG", "false") == "true"
@@ -692,8 +742,8 @@ async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concur
                         }
                         code_metadatas.append(code_meta)
             
-            # Add all code examples to Supabase
-            if code_examples:
+            # Add all code examples to Supabase only if available
+            if code_examples and supabase_client:
                 add_code_examples_to_supabase(
                     supabase_client, 
                     code_urls, 
@@ -703,6 +753,8 @@ async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concur
                     code_metadatas,
                     batch_size=batch_size
                 )
+            elif code_examples and not supabase_client:
+                print("⚠️ Warning: Supabase not configured - code examples will not be stored")
         
         return json.dumps({
             "success": True,
@@ -742,6 +794,9 @@ async def get_available_sources(ctx: Context) -> str:
     try:
         # Get the Supabase client from the context
         supabase_client = ctx.request_context.lifespan_context.supabase_client
+        
+        if not supabase_client:
+            return "❌ Supabase n'est pas configuré. Les variables SUPABASE_URL et SUPABASE_SERVICE_ROLE_KEY doivent être définies pour lister les sources."
         
         # Query the sources table directly
         result = supabase_client.from_('sources')\
@@ -801,6 +856,9 @@ async def perform_rag_query(ctx: Context, query: str, source: str = None, match_
         filter_metadata = None
         if source and source.strip():
             filter_metadata = {"source": source}
+        
+        if not supabase_client:
+            return "❌ Supabase n'est pas configuré. Les variables SUPABASE_URL et SUPABASE_SERVICE_ROLE_KEY doivent être définies pour utiliser la recherche de documents."
         
         if use_hybrid_search:
             # Hybrid search: combine vector and keyword search
@@ -951,6 +1009,9 @@ async def search_code_examples(ctx: Context, query: str, source_id: str = None, 
         if source_id and source_id.strip():
             filter_metadata = {"source": source_id}
         
+        if not supabase_client:
+            return "❌ Supabase n'est pas configuré. Les variables SUPABASE_URL et SUPABASE_SERVICE_ROLE_KEY doivent être définies pour utiliser la recherche d'exemples de code."
+        
         if use_hybrid_search:
             # Hybrid search: combine vector and keyword search
             
@@ -1071,46 +1132,40 @@ async def search_code_examples(ctx: Context, query: str, source_id: str = None, 
 @mcp.tool()
 async def check_ai_script_hallucinations(ctx: Context, script_path: str) -> str:
     """
-    Check an AI-generated Python script for hallucinations using the knowledge graph.
+    Check an AI-generated script for hallucinations using pattern matching and knowledge graphs.
     
-    This tool analyzes a Python script for potential AI hallucinations by validating
-    imports, method calls, class instantiations, and function calls against a Neo4j
-    knowledge graph containing real repository data.
+    This tool analyzes Python, TypeScript, or JavaScript files for potential AI hallucinations
+    by validating code patterns against known frameworks and libraries.
+    
+    **For Python scripts (.py):**
+    - Uses Neo4j knowledge graph for validation against real repository data
+    - Validates imports, method calls, class instantiations, and function calls
+    - Requires knowledge graph functionality enabled (USE_KNOWLEDGE_GRAPH=true)
+    
+    **For TypeScript/JavaScript files (.ts, .tsx, .js, .jsx):**
+    - Uses built-in pattern validation for React, JavaScript, and TypeScript
+    - Validates React hooks, component patterns, and framework methods
+    - Checks against known npm packages and JavaScript built-ins
+    - Works without Neo4j dependency
     
     The tool performs comprehensive analysis including:
-    - Import validation against known repositories
-    - Method call validation on classes from the knowledge graph
-    - Class instantiation parameter validation
-    - Function call parameter validation
+    - Import/require statement validation
+    - Method call validation on known objects and classes
+    - Function call validation against framework APIs
     - Attribute access validation
+    - React-specific pattern validation (hooks, components, lifecycle methods)
     
     Args:
         ctx: The MCP server provided context
-        script_path: Absolute path to the Python script to analyze
+        script_path: Absolute path to the script file to analyze (.py, .js, .jsx, .ts, .tsx)
     
     Returns:
         JSON string with hallucination detection results, confidence scores, and recommendations
     """
     try:
-        # Check if knowledge graph functionality is enabled
-        knowledge_graph_enabled = os.getenv("USE_KNOWLEDGE_GRAPH", "false") == "true"
-        if not knowledge_graph_enabled:
-            return json.dumps({
-                "success": False,
-                "error": "Knowledge graph functionality is disabled. Set USE_KNOWLEDGE_GRAPH=true in environment."
-            }, indent=2)
-        
-        # Get the knowledge validator from context
-        knowledge_validator = ctx.request_context.lifespan_context.knowledge_validator
-        
-        if not knowledge_validator:
-            return json.dumps({
-                "success": False,
-                "error": "Knowledge graph validator not available. Check Neo4j configuration in environment variables."
-            }, indent=2)
-        
-        # Validate script path
-        validation = validate_script_path(script_path)
+        # Validate script path and detect language
+        supported_extensions = ['.py', '.js', '.jsx', '.ts', '.tsx']
+        validation = validate_script_path(script_path, supported_extensions)
         if not validation["valid"]:
             return json.dumps({
                 "success": False,
@@ -1118,24 +1173,103 @@ async def check_ai_script_hallucinations(ctx: Context, script_path: str) -> str:
                 "error": validation["error"]
             }, indent=2)
         
-        # Step 1: Analyze script structure using AST
-        analyzer = AIScriptAnalyzer()
-        analysis_result = analyzer.analyze_script(script_path)
+        language = validation["language"]
         
-        if analysis_result.errors:
-            print(f"Analysis warnings for {script_path}: {analysis_result.errors}")
+        # Route to appropriate analyzer based on language
+        if language == 'python':
+            return await _analyze_python_script(ctx, script_path)
+        elif language in ['typescript', 'javascript']:
+            return await _analyze_ts_js_script(ctx, script_path, language)
+        else:
+            return json.dumps({
+                "success": False,
+                "script_path": script_path,
+                "error": f"Unsupported language: {language}"
+            }, indent=2)
         
-        # Step 2: Validate against knowledge graph
-        validation_result = await knowledge_validator.validate_script(analysis_result)
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "script_path": script_path,
+            "error": f"Analysis failed: {str(e)}"
+        }, indent=2)
+
+async def _analyze_python_script(ctx: Context, script_path: str) -> str:
+    """Analyze Python script using Neo4j knowledge graph"""
+    # Check if knowledge graph functionality is enabled
+    knowledge_graph_enabled = os.getenv("USE_KNOWLEDGE_GRAPH", "false") == "true"
+    if not knowledge_graph_enabled:
+        return json.dumps({
+            "success": False,
+            "error": "Knowledge graph functionality is disabled. Set USE_KNOWLEDGE_GRAPH=true for Python analysis."
+        }, indent=2)
+    
+    # Get the knowledge validator from context
+    knowledge_validator = ctx.request_context.lifespan_context.knowledge_validator
+    
+    if not knowledge_validator:
+        return json.dumps({
+            "success": False,
+            "error": "Knowledge graph validator not available. Check Neo4j configuration in environment variables."
+        }, indent=2)
+    
+    # Step 1: Analyze script structure using AST
+    analyzer = AIScriptAnalyzer()
+    analysis_result = analyzer.analyze_script(script_path)
+    
+    if analysis_result.errors:
+        print(f"Analysis warnings for {script_path}: {analysis_result.errors}")
+    
+    # Step 2: Validate against knowledge graph
+    validation_result = await knowledge_validator.validate_script(analysis_result)
+    
+    # Step 3: Generate comprehensive report
+    reporter = HallucinationReporter()
+    report = reporter.generate_comprehensive_report(validation_result)
+    
+    # Format response with comprehensive information
+    return json.dumps({
+        "success": True,
+        "script_path": script_path,
+        "language": "python",
+        "analyzer_type": "knowledge_graph",
+        "overall_confidence": validation_result.overall_confidence,
+        "validation_summary": {
+            "total_validations": report["validation_summary"]["total_validations"],
+            "valid_count": report["validation_summary"]["valid_count"],
+            "invalid_count": report["validation_summary"]["invalid_count"],
+            "uncertain_count": report["validation_summary"]["uncertain_count"],
+            "not_found_count": report["validation_summary"]["not_found_count"],
+            "hallucination_rate": report["validation_summary"]["hallucination_rate"]
+        },
+        "hallucinations_detected": report["hallucinations_detected"],
+        "recommendations": report["recommendations"],
+        "analysis_metadata": {
+            "total_imports": report["analysis_metadata"]["total_imports"],
+            "total_classes": report["analysis_metadata"]["total_classes"],
+            "total_methods": report["analysis_metadata"]["total_methods"],
+            "total_attributes": report["analysis_metadata"]["total_attributes"],
+            "total_functions": report["analysis_metadata"]["total_functions"]
+        },
+        "libraries_analyzed": report.get("libraries_analyzed", [])
+    }, indent=2)
+
+async def _analyze_ts_js_script(ctx: Context, script_path: str, language: str) -> str:
+    """Analyze TypeScript/JavaScript script using pattern validation"""
+    try:
+        # Step 1: Analyze script using TypeScript analyzer
+        validation_result = await validate_ts_script(script_path)
         
-        # Step 3: Generate comprehensive report
-        reporter = HallucinationReporter()
+        # Step 2: Generate comprehensive report
+        reporter = TSHallucinationReporter()
         report = reporter.generate_comprehensive_report(validation_result)
         
         # Format response with comprehensive information
         return json.dumps({
             "success": True,
             "script_path": script_path,
+            "language": language,
+            "analyzer_type": "pattern_validation",
             "overall_confidence": validation_result.overall_confidence,
             "validation_summary": {
                 "total_validations": report["validation_summary"]["total_validations"],
@@ -1154,14 +1288,15 @@ async def check_ai_script_hallucinations(ctx: Context, script_path: str) -> str:
                 "total_attributes": report["analysis_metadata"]["total_attributes"],
                 "total_functions": report["analysis_metadata"]["total_functions"]
             },
-            "libraries_analyzed": report.get("libraries_analyzed", [])
+            "frameworks_analyzed": report.get("frameworks_analyzed", [])
         }, indent=2)
         
     except Exception as e:
         return json.dumps({
             "success": False,
             "script_path": script_path,
-            "error": f"Analysis failed: {str(e)}"
+            "language": language,
+            "error": f"TypeScript/JavaScript analysis failed: {str(e)}"
         }, indent=2)
 
 @mcp.tool()
@@ -1183,7 +1318,7 @@ async def query_knowledge_graph(ctx: Context, command: str) -> str:
     - `repos` - **START HERE!** List all repositories in the knowledge graph
     - `explore <repo_name>` - Get detailed overview of a specific repository
     
-    **Class Commands:**  
+    **Python Class Commands:**  
     - `classes` - List all classes across all repositories (limited to 20)
     - `classes <repo_name>` - List classes in a specific repository
     - `class <class_name>` - Get detailed information about a specific class including methods and attributes
@@ -1191,6 +1326,22 @@ async def query_knowledge_graph(ctx: Context, command: str) -> str:
     **Method Commands:**
     - `method <method_name>` - Search for methods by name across all classes
     - `method <method_name> <class_name>` - Search for a method within a specific class
+    
+    **React/TypeScript Component Commands:**
+    - `components` - List all React components across all repositories (limited to 20)
+    - `components <repo_name>` - List React components in a specific repository
+    - `component <component_name>` - Get detailed information about a specific React component
+    
+    **React Hook Commands:**
+    - `hooks` - List all React hook usages across all repositories (limited to 20)
+    - `hooks <repo_name>` - List React hook usages in a specific repository
+    - `hook <hook_name>` - Search for specific hook usage patterns
+    
+    **Function Commands:**
+    - `functions` - List all functions across all repositories (limited to 20)
+    - `functions <repo_name>` - List functions in a specific repository
+    - `function <function_name>` - Search for functions by name across all repositories
+    - `function <function_name> <repo_name>` - Search for a function within a specific repository
     
     **Custom Query:**
     - `query <cypher_query>` - Execute a custom Cypher query (results limited to 20 records)
@@ -1200,27 +1351,42 @@ async def query_knowledge_graph(ctx: Context, command: str) -> str:
     **Node Types:**
     - Repository: `(r:Repository {name: string})`
     - File: `(f:File {path: string, module_name: string})`
+    
+    **Python Nodes:**
     - Class: `(c:Class {name: string, full_name: string})`
     - Method: `(m:Method {name: string, params_list: [string], params_detailed: [string], return_type: string, args: [string]})`
     - Function: `(func:Function {name: string, params_list: [string], params_detailed: [string], return_type: string, args: [string]})`
     - Attribute: `(a:Attribute {name: string, type: string})`
     
+    **React/TypeScript Nodes:**
+    - Component: `(comp:Component {name: string, full_name: string, type: string, props: [string], hooks: [string], is_exported: boolean})`
+    - Hook: `(hook:Hook {name: string, args: [string], variable_name: string})`
+    
     **Relationships:**
     - `(r:Repository)-[:CONTAINS]->(f:File)`
-    - `(f:File)-[:DEFINES]->(c:Class)`
+    - `(f:File)-[:DEFINES]->(c:Class)` (Python classes)
+    - `(f:File)-[:DEFINES]->(comp:Component)` (React components)
+    - `(f:File)-[:DEFINES]->(func:Function)` (Functions)
+    - `(f:File)-[:USES]->(hook:Hook)` (Hook usage)
     - `(c:Class)-[:HAS_METHOD]->(m:Method)`
     - `(c:Class)-[:HAS_ATTRIBUTE]->(a:Attribute)`
-    - `(f:File)-[:DEFINES]->(func:Function)`
     
     ## Example Workflow:
     ```
+    # Python/General workflow
     1. repos                                    # See what repositories are available
-    2. explore pydantic-ai                      # Explore a specific repository
-    3. classes pydantic-ai                      # List classes in that repository
-    4. class Agent                              # Explore the Agent class
-    5. method run_stream                        # Search for run_stream method
-    6. method __init__ Agent                    # Find Agent constructor
-    7. query "MATCH (c:Class)-[:HAS_METHOD]->(m:Method) WHERE m.name = 'run' RETURN c.name, m.name LIMIT 5"
+    2. explore my-python-project                # Explore a specific repository
+    3. classes my-python-project                # List Python classes in that repository
+    4. class User                               # Explore the User class
+    5. method authenticate                      # Search for authenticate method
+    6. functions my-python-project              # List all functions in the repository
+    
+    # React/TypeScript workflow
+    7. components my-react-app                  # List React components in repository
+    8. component UserProfile                    # Explore the UserProfile component
+    9. hooks my-react-app                       # List React hook usages
+    10. hook useState                           # Search for useState usage patterns
+    11. query "MATCH (comp:Component)-[:USES]->(hook:Hook) WHERE hook.name = 'useEffect' RETURN comp.name, hook.args LIMIT 5"
     ```
     
     Args:
@@ -1293,6 +1459,41 @@ async def query_knowledge_graph(ctx: Context, command: str) -> str:
                 method_name = args[0]
                 class_name = args[1] if len(args) > 1 else None
                 return await _handle_method_command(session, command, method_name, class_name)
+            elif cmd == "components":
+                repo_name = args[0] if args else None
+                return await _handle_components_command(session, command, repo_name)
+            elif cmd == "component":
+                if not args:
+                    return json.dumps({
+                        "success": False,
+                        "command": command,
+                        "error": "Component name required. Usage: component <component_name>"
+                    }, indent=2)
+                return await _handle_component_command(session, command, args[0])
+            elif cmd == "hooks":
+                repo_name = args[0] if args else None
+                return await _handle_hooks_command(session, command, repo_name)
+            elif cmd == "hook":
+                if not args:
+                    return json.dumps({
+                        "success": False,
+                        "command": command,
+                        "error": "Hook name required. Usage: hook <hook_name>"
+                    }, indent=2)
+                return await _handle_hook_command(session, command, args[0])
+            elif cmd == "functions":
+                repo_name = args[0] if args else None
+                return await _handle_functions_command(session, command, repo_name)
+            elif cmd == "function":
+                if not args:
+                    return json.dumps({
+                        "success": False,
+                        "command": command,
+                        "error": "Function name required. Usage: function <function_name> [repo_name]"
+                    }, indent=2)
+                function_name = args[0]
+                repo_name = args[1] if len(args) > 1 else None
+                return await _handle_function_command(session, command, function_name, repo_name)
             elif cmd == "query":
                 if not args:
                     return json.dumps({
@@ -1306,7 +1507,7 @@ async def query_knowledge_graph(ctx: Context, command: str) -> str:
                 return json.dumps({
                     "success": False,
                     "command": command,
-                    "error": f"Unknown command '{cmd}'. Available commands: repos, explore <repo>, classes [repo], class <name>, method <name> [class], query <cypher>"
+                    "error": f"Unknown command '{cmd}'. Available commands: repos, explore <repo>, classes [repo], class <name>, method <name> [class], components [repo], component <name>, hooks [repo], hook <name>, functions [repo], function <name> [repo], query <cypher>"
                 }, indent=2)
                 
     except Exception as e:
@@ -1620,6 +1821,348 @@ async def _handle_query_command(session, command: str, cypher_query: str) -> str
 
 
 @mcp.tool()
+async def comprehensive_validation(ctx: Context, script_path: str) -> str:
+    """
+    Validation complète et exhaustive d'un script TypeScript/JavaScript/React.
+    
+    Cette fonction effectue une validation complète incluant:
+    
+    🔍 **Analyse React/TypeScript:**
+    - Composants React (nommage, props, hooks)
+    - Hooks usage (conditionals, loops, règles)
+    - Types TypeScript (interfaces, génériques, unions)
+    - Signatures de fonctions complètes
+    - Imports/exports cohérents
+    
+    🔍 **Validation Supabase:**
+    - Tables existantes dans le schéma DB
+    - Fonctions RPC disponibles
+    - Colonnes et types de données
+    - Politiques RLS et contraintes
+    
+    🔍 **Détection de patterns avancés:**
+    - Anti-patterns React (mutations state, inline functions)
+    - Problèmes de performance (re-renders, memory leaks)
+    - Risques de sécurité (XSS, injections)
+    - Accessibilité (alt text, aria labels)
+    - Violations des règles de hooks
+    
+    🔍 **Validation de signatures:**
+    - Arguments d'entrée vs attendus
+    - Types de retour vs utilisations
+    - Définitions vs déclarations
+    - Génériques et contraintes
+    
+    Args:
+        ctx: The MCP server provided context
+        script_path: Chemin absolu vers le fichier à valider (.ts, .tsx, .js, .jsx)
+    
+    Returns:
+        JSON avec rapport complet de validation incluant détections, recommandations et statistiques
+    """
+    try:
+        # Validation du chemin
+        validation = validate_script_path(script_path, ['.py', '.js', '.jsx', '.ts', '.tsx'])
+        if not validation["valid"]:
+            return json.dumps({
+                "success": False,
+                "script_path": script_path,
+                "error": validation["error"]
+            }, indent=2)
+        
+        # Vérifier si le validateur complet est disponible
+        comprehensive_validator = ctx.request_context.lifespan_context.comprehensive_validator
+        if not comprehensive_validator:
+            return json.dumps({
+                "success": False,
+                "error": "Comprehensive validator not available. Check system configuration."
+            }, indent=2)
+        
+        # Effectuer la validation complète
+        print(f"Starting comprehensive validation for: {script_path}")
+        report = await comprehensive_validator.validate_script(script_path)
+        
+        # Formater le rapport complet
+        return json.dumps({
+            "success": True,
+            "script_path": script_path,
+            "language": report.language,
+            "analysis_timestamp": report.analysis_timestamp.isoformat(),
+            "overall_confidence": report.overall_confidence,
+            
+            # Résumé des détections
+            "validation_summary": {
+                "total_detections": len(report.detections),
+                "critical_issues": report.statistics.get('critical_issues', 0),
+                "high_issues": report.statistics.get('high_issues', 0),
+                "medium_issues": report.statistics.get('medium_issues', 0),
+                "low_issues": report.statistics.get('low_issues', 0),
+                "frameworks_detected": len(report.frameworks_detected)
+            },
+            
+            # Détections par catégorie
+            "detections_by_type": {
+                "component_issues": [d for d in report.detections if d.type in [DetectionType.COMPONENT_NOT_FOUND]],
+                "hook_issues": [d for d in report.detections if d.type in [DetectionType.HOOK_NOT_FOUND]],
+                "supabase_issues": [d for d in report.detections if d.type in [DetectionType.SUPABASE_TABLE_NOT_FOUND, DetectionType.SUPABASE_FUNCTION_NOT_FOUND]],
+                "signature_issues": [d for d in report.detections if d.type in [DetectionType.INCORRECT_SIGNATURE]],
+                "type_issues": [d for d in report.detections if d.type in [DetectionType.INVALID_TYPE]],
+                "performance_issues": [d for d in report.detections if d.type in [DetectionType.BAD_PRACTICE] and "performance" in d.message.lower()],
+                "security_issues": [d for d in report.detections if "security" in d.message.lower() or "xss" in d.message.lower()],
+                "accessibility_issues": [d for d in report.detections if "accessibility" in d.message.lower() or "alt" in d.message.lower() or "aria" in d.message.lower()]
+            },
+            
+            # Top 10 des problèmes les plus critiques
+            "critical_detections": sorted([
+                {
+                    "type": d.type.value,
+                    "severity": d.severity.value,
+                    "message": d.message,
+                    "location": d.location,
+                    "line_number": d.line_number,
+                    "confidence": d.confidence,
+                    "suggestion": d.suggestion,
+                    "context": d.context
+                }
+                for d in report.detections
+            ], key=lambda x: (
+                {'CRITICAL': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1, 'INFO': 0}.get(x['severity'], 0),
+                x['confidence']
+            ), reverse=True)[:10],
+            
+            # Frameworks et technologies détectées
+            "frameworks_analyzed": report.frameworks_detected,
+            
+            # Information Supabase si disponible
+            "supabase_analysis": report.supabase_info,
+            
+            # Recommandations
+            "recommendations": report.recommendations,
+            
+            # Statistiques détaillées
+            "detailed_statistics": report.statistics,
+            
+            # Métriques de qualité de code
+            "code_quality_metrics": {
+                "confidence_score": report.overall_confidence,
+                "issues_per_severity": {
+                    "critical": report.statistics.get('critical_issues', 0),
+                    "high": report.statistics.get('high_issues', 0),
+                    "medium": report.statistics.get('medium_issues', 0),
+                    "low": report.statistics.get('low_issues', 0)
+                },
+                "total_lines_analyzed": len(open(script_path, 'r').readlines()) if os.path.exists(script_path) else 0,
+                "issue_density": len(report.detections) / max(1, len(open(script_path, 'r').readlines())) if os.path.exists(script_path) else 0
+            },
+            
+            # Actions recommandées par priorité
+            "action_items": {
+                "immediate": [d for d in report.detections if d.severity in [Severity.CRITICAL, Severity.HIGH]],
+                "soon": [d for d in report.detections if d.severity == Severity.MEDIUM],
+                "eventually": [d for d in report.detections if d.severity in [Severity.LOW, Severity.INFO]]
+            }
+            
+        }, indent=2, default=str)
+        
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "script_path": script_path,
+            "error": f"Comprehensive validation failed: {str(e)}"
+        }, indent=2)
+
+
+@mcp.tool()
+async def analyze_supabase_schema(ctx: Context, project_name: str = None) -> str:
+    """
+    Analyser et stocker le schéma complet de Supabase dans Neo4j.
+    
+    Cette fonction analyse votre base de données Supabase et extrait:
+    
+    📊 **Structure de la base de données:**
+    - Tables avec colonnes et types
+    - Clés primaires et étrangères
+    - Index et contraintes
+    - Relations entre tables
+    
+    🔐 **Sécurité et politiques:**
+    - Politiques RLS (Row Level Security)
+    - Permissions et rôles
+    - Fonctions de sécurité
+    
+    ⚡ **Fonctions et procédures:**
+    - Fonctions RPC Supabase
+    - Triggers et procédures stockées
+    - Paramètres et types de retour
+    
+    📝 **Types et enums:**
+    - Types personnalisés PostgreSQL
+    - Enums et leurs valeurs
+    - Extensions installées
+    
+    Les données sont stockées dans Neo4j pour validation ultérieure des scripts
+    qui utilisent Supabase.
+    
+    Args:
+        ctx: The MCP server provided context
+        project_name: Nom du projet Supabase (optionnel, par défaut "supabase_project")
+    
+    Returns:
+        JSON avec résumé de l'analyse du schéma et statistiques
+    """
+    try:
+        # Vérifier les credentials Supabase
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_ANON_KEY")
+        
+        if not supabase_url or not supabase_key:
+            return json.dumps({
+                "success": False,
+                "error": "Supabase credentials not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY environment variables."
+            }, indent=2)
+        
+        # Vérifier si Neo4j est disponible
+        repo_extractor = ctx.request_context.lifespan_context.repo_extractor
+        if not repo_extractor:
+            return json.dumps({
+                "success": False,
+                "error": "Neo4j repository extractor not available. Check Neo4j configuration."
+            }, indent=2)
+        
+        # Effectuer l'analyse du schéma Supabase
+        print(f"Starting Supabase schema analysis for project: {project_name or 'supabase_project'}")
+        
+        success = await repo_extractor.analyze_supabase_schema(
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+            project_name=project_name or "supabase_project"
+        )
+        
+        if not success:
+            return json.dumps({
+                "success": False,
+                "error": "Failed to analyze Supabase schema. Check connection and permissions."
+            }, indent=2)
+        
+        # Obtenir les statistiques du schéma analysé
+        async with repo_extractor.driver.session() as session:
+            stats_query = """
+            MATCH (p:SupabaseProject {name: $project_name})
+            OPTIONAL MATCH (p)-[:CONTAINS_TABLE]->(t:SupabaseTable)
+            OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:SupabaseColumn)
+            OPTIONAL MATCH (p)-[:CONTAINS_FUNCTION]->(f:SupabaseFunction)
+            OPTIONAL MATCH (p)-[:CONTAINS_ENUM]->(e:SupabaseEnum)
+            OPTIONAL MATCH (t)-[:HAS_POLICY]->(pol:RLSPolicy)
+            OPTIONAL MATCH (t1:SupabaseTable)-[r:REFERENCES]->(t2:SupabaseTable)
+            
+            WITH p, 
+                 count(DISTINCT t) as tables_count,
+                 count(DISTINCT c) as columns_count,
+                 count(DISTINCT f) as functions_count,
+                 count(DISTINCT e) as enums_count,
+                 count(DISTINCT pol) as policies_count,
+                 count(DISTINCT r) as relations_count
+            
+            RETURN 
+                p.name as project_name,
+                p.url as project_url,
+                tables_count,
+                columns_count,
+                functions_count,
+                enums_count,
+                policies_count,
+                relations_count
+            """
+            
+            result = await session.run(stats_query, project_name=project_name or "supabase_project")
+            stats_record = await result.single()
+            
+            if not stats_record:
+                return json.dumps({
+                    "success": False,
+                    "error": "Schema analysis completed but no data found in Neo4j."
+                }, indent=2)
+            
+            # Obtenir quelques exemples de tables
+            tables_query = """
+            MATCH (p:SupabaseProject {name: $project_name})-[:CONTAINS_TABLE]->(t:SupabaseTable)
+            OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:SupabaseColumn)
+            WITH t, count(c) as column_count
+            RETURN t.name as table_name, t.schema as schema_name, t.rls_enabled as rls_enabled, column_count
+            ORDER BY column_count DESC
+            LIMIT 10
+            """
+            
+            tables_result = await session.run(tables_query, project_name=project_name or "supabase_project")
+            sample_tables = []
+            
+            async for record in tables_result:
+                sample_tables.append({
+                    'name': record['table_name'],
+                    'schema': record['schema_name'],
+                    'rls_enabled': record['rls_enabled'],
+                    'column_count': record['column_count']
+                })
+            
+            # Obtenir quelques exemples de fonctions
+            functions_query = """
+            MATCH (p:SupabaseProject {name: $project_name})-[:CONTAINS_FUNCTION]->(f:SupabaseFunction)
+            RETURN f.name as function_name, f.schema as schema_name, f.return_type as return_type, size(f.parameters) as param_count
+            ORDER BY param_count DESC
+            LIMIT 10
+            """
+            
+            functions_result = await session.run(functions_query, project_name=project_name or "supabase_project")
+            sample_functions = []
+            
+            async for record in functions_result:
+                sample_functions.append({
+                    'name': record['function_name'],
+                    'schema': record['schema_name'],
+                    'return_type': record['return_type'],
+                    'param_count': record['param_count']
+                })
+        
+        return json.dumps({
+            "success": True,
+            "project_name": stats_record['project_name'],
+            "project_url": stats_record['project_url'],
+            "message": f"Successfully analyzed Supabase schema for project '{stats_record['project_name']}'",
+            
+            # Statistiques globales
+            "schema_statistics": {
+                "tables": stats_record['tables_count'],
+                "columns": stats_record['columns_count'],
+                "functions": stats_record['functions_count'],
+                "enums": stats_record['enums_count'],
+                "rls_policies": stats_record['policies_count'],
+                "foreign_key_relations": stats_record['relations_count']
+            },
+            
+            # Exemples de tables trouvées
+            "sample_tables": sample_tables,
+            
+            # Exemples de fonctions trouvées
+            "sample_functions": sample_functions,
+            
+            # Status de validation
+            "validation_ready": True,
+            "next_steps": [
+                "Schema is now available for script validation",
+                "Use comprehensive_validation to check scripts against this Supabase schema",
+                "Tables and functions will be validated when analyzing TypeScript/JavaScript code"
+            ]
+            
+        }, indent=2)
+        
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"Supabase schema analysis failed: {str(e)}"
+        }, indent=2)
+
+
+@mcp.tool()
 async def parse_github_repository(ctx: Context, repo_url: str) -> str:
     """
     Parse a GitHub repository into the Neo4j knowledge graph.
@@ -1840,6 +2383,295 @@ async def crawl_recursive_internal_links(crawler: AsyncWebCrawler, start_urls: L
         current_urls = next_level_urls
 
     return results_all
+
+
+async def _handle_components_command(session, command: str, repo_name: str = None) -> str:
+    """Handle 'components [repo]' command - list React components"""
+    limit = 20
+    
+    if repo_name:
+        query = """
+        MATCH (r:Repository {name: $repo_name})-[:CONTAINS]->(f:File)-[:DEFINES]->(comp:Component)
+        RETURN comp.name as name, comp.full_name as full_name, comp.type as type, 
+               comp.props as props, comp.is_exported as is_exported, f.path as file_path
+        ORDER BY comp.name
+        LIMIT $limit
+        """
+        result = await session.run(query, repo_name=repo_name, limit=limit)
+    else:
+        query = """
+        MATCH (comp:Component)
+        RETURN comp.name as name, comp.full_name as full_name, comp.type as type,
+               comp.props as props, comp.is_exported as is_exported
+        ORDER BY comp.name
+        LIMIT $limit
+        """
+        result = await session.run(query, limit=limit)
+    
+    components = []
+    async for record in result:
+        component_data = {
+            'name': record['name'],
+            'full_name': record['full_name'],
+            'type': record['type'],
+            'props': record['props'],
+            'is_exported': record['is_exported']
+        }
+        if 'file_path' in record:
+            component_data['file_path'] = record['file_path']
+        components.append(component_data)
+    
+    return json.dumps({
+        "success": True,
+        "command": command,
+        "data": {
+            "components": components,
+            "repository_filter": repo_name
+        },
+        "metadata": {
+            "total_results": len(components),
+            "limited": len(components) >= limit
+        }
+    }, indent=2)
+
+
+async def _handle_component_command(session, command: str, component_name: str) -> str:
+    """Handle 'component <name>' command - explore specific React component"""
+    # Find the component
+    component_query = """
+    MATCH (comp:Component)
+    WHERE comp.name = $component_name OR comp.full_name = $component_name
+    RETURN comp.name as name, comp.full_name as full_name, comp.type as type,
+           comp.props as props, comp.hooks as hooks, comp.is_exported as is_exported
+    LIMIT 1
+    """
+    result = await session.run(component_query, component_name=component_name)
+    component_record = await result.single()
+    
+    if not component_record:
+        return json.dumps({
+            "success": False,
+            "command": command,
+            "error": f"Component '{component_name}' not found in knowledge graph"
+        }, indent=2)
+    
+    component_data = {
+        "name": component_record['name'],
+        "full_name": component_record['full_name'],
+        "type": component_record['type'],
+        "props": component_record['props'],
+        "hooks": component_record['hooks'],
+        "is_exported": component_record['is_exported']
+    }
+    
+    return json.dumps({
+        "success": True,
+        "command": command,
+        "data": {
+            "component": component_data
+        },
+        "metadata": {
+            "total_results": 1,
+            "limited": False
+        }
+    }, indent=2)
+
+
+async def _handle_hooks_command(session, command: str, repo_name: str = None) -> str:
+    """Handle 'hooks [repo]' command - list React hook usages"""
+    limit = 20
+    
+    if repo_name:
+        query = """
+        MATCH (r:Repository {name: $repo_name})-[:CONTAINS]->(f:File)-[:USES]->(hook:Hook)
+        RETURN hook.name as name, hook.args as args, hook.variable_name as variable_name,
+               f.path as file_path
+        ORDER BY hook.name
+        LIMIT $limit
+        """
+        result = await session.run(query, repo_name=repo_name, limit=limit)
+    else:
+        query = """
+        MATCH (hook:Hook)
+        RETURN hook.name as name, hook.args as args, hook.variable_name as variable_name
+        ORDER BY hook.name
+        LIMIT $limit
+        """
+        result = await session.run(query, limit=limit)
+    
+    hooks = []
+    async for record in result:
+        hook_data = {
+            'name': record['name'],
+            'args': record['args'],
+            'variable_name': record['variable_name']
+        }
+        if 'file_path' in record:
+            hook_data['file_path'] = record['file_path']
+        hooks.append(hook_data)
+    
+    return json.dumps({
+        "success": True,
+        "command": command,
+        "data": {
+            "hooks": hooks,
+            "repository_filter": repo_name
+        },
+        "metadata": {
+            "total_results": len(hooks),
+            "limited": len(hooks) >= limit
+        }
+    }, indent=2)
+
+
+async def _handle_hook_command(session, command: str, hook_name: str) -> str:
+    """Handle 'hook <name>' command - search for specific hook usage"""
+    query = """
+    MATCH (f:File)-[:USES]->(hook:Hook)
+    WHERE hook.name = $hook_name
+    RETURN hook.name as hook_name, hook.args as args, hook.variable_name as variable_name,
+           f.path as file_path
+    ORDER BY f.path
+    LIMIT 20
+    """
+    result = await session.run(query, hook_name=hook_name)
+    
+    hooks = []
+    async for record in result:
+        hooks.append({
+            'hook_name': record['hook_name'],
+            'args': record['args'],
+            'variable_name': record['variable_name'],
+            'file_path': record['file_path']
+        })
+    
+    if not hooks:
+        return json.dumps({
+            "success": False,
+            "command": command,
+            "error": f"Hook '{hook_name}' not found in knowledge graph"
+        }, indent=2)
+    
+    return json.dumps({
+        "success": True,
+        "command": command,
+        "data": {
+            "hooks": hooks,
+            "hook_filter": hook_name
+        },
+        "metadata": {
+            "total_results": len(hooks),
+            "limited": len(hooks) >= 20
+        }
+    }, indent=2)
+
+
+async def _handle_functions_command(session, command: str, repo_name: str = None) -> str:
+    """Handle 'functions [repo]' command - list functions"""
+    limit = 20
+    
+    if repo_name:
+        query = """
+        MATCH (r:Repository {name: $repo_name})-[:CONTAINS]->(f:File)-[:DEFINES]->(func:Function)
+        RETURN func.name as name, func.full_name as full_name, func.params_detailed as params_detailed,
+               func.return_type as return_type, f.path as file_path
+        ORDER BY func.name
+        LIMIT $limit
+        """
+        result = await session.run(query, repo_name=repo_name, limit=limit)
+    else:
+        query = """
+        MATCH (func:Function)
+        RETURN func.name as name, func.full_name as full_name, func.params_detailed as params_detailed,
+               func.return_type as return_type
+        ORDER BY func.name
+        LIMIT $limit
+        """
+        result = await session.run(query, limit=limit)
+    
+    functions = []
+    async for record in result:
+        function_data = {
+            'name': record['name'],
+            'full_name': record['full_name'],
+            'parameters': record['params_detailed'],
+            'return_type': record['return_type']
+        }
+        if 'file_path' in record:
+            function_data['file_path'] = record['file_path']
+        functions.append(function_data)
+    
+    return json.dumps({
+        "success": True,
+        "command": command,
+        "data": {
+            "functions": functions,
+            "repository_filter": repo_name
+        },
+        "metadata": {
+            "total_results": len(functions),
+            "limited": len(functions) >= limit
+        }
+    }, indent=2)
+
+
+async def _handle_function_command(session, command: str, function_name: str, repo_name: str = None) -> str:
+    """Handle 'function <name> [repo]' command - search for functions"""
+    if repo_name:
+        query = """
+        MATCH (r:Repository {name: $repo_name})-[:CONTAINS]->(f:File)-[:DEFINES]->(func:Function)
+        WHERE func.name = $function_name
+        RETURN func.name as function_name, func.full_name as full_name,
+               func.params_detailed as params_detailed, func.return_type as return_type,
+               f.path as file_path
+        ORDER BY f.path
+        LIMIT 20
+        """
+        result = await session.run(query, function_name=function_name, repo_name=repo_name)
+    else:
+        query = """
+        MATCH (func:Function)
+        WHERE func.name = $function_name
+        RETURN func.name as function_name, func.full_name as full_name,
+               func.params_detailed as params_detailed, func.return_type as return_type
+        ORDER BY func.full_name
+        LIMIT 20
+        """
+        result = await session.run(query, function_name=function_name)
+    
+    functions = []
+    async for record in result:
+        function_data = {
+            'function_name': record['function_name'],
+            'full_name': record['full_name'],
+            'parameters': record['params_detailed'],
+            'return_type': record['return_type']
+        }
+        if 'file_path' in record:
+            function_data['file_path'] = record['file_path']
+        functions.append(function_data)
+    
+    if not functions:
+        return json.dumps({
+            "success": False,
+            "command": command,
+            "error": f"Function '{function_name}'" + (f" in repository '{repo_name}'" if repo_name else "") + " not found"
+        }, indent=2)
+    
+    return json.dumps({
+        "success": True,
+        "command": command,
+        "data": {
+            "functions": functions,
+            "function_filter": function_name,
+            "repository_filter": repo_name
+        },
+        "metadata": {
+            "total_results": len(functions),
+            "limited": len(functions) >= 20
+        }
+    }, indent=2)
+
 
 async def main():
     transport = os.getenv("TRANSPORT", "sse")

@@ -1,0 +1,16 @@
+{
+  "name": "mcp-crawl4react-rag",
+  "version": "1.0.0",
+  "description": "MCP Crawl4React RAG Server - Web Crawling and RAG for React Applications",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@babel/parser": "^7.27.5",
+    "esprima": "^4.0.1"
+  }
+}

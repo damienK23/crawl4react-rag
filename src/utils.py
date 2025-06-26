@@ -19,13 +19,14 @@ def get_supabase_client() -> Client:
     Get a Supabase client with the URL and key from environment variables.
     
     Returns:
-        Supabase client instance
+        Supabase client instance or None if credentials not configured
     """
     url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_KEY")
+    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
     
     if not url or not key:
-        raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in environment variables")
+        print("Warning: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are not set. Supabase features will be disabled.")
+        return None
     
     return create_client(url, key)
 

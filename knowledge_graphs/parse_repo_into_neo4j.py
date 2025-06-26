@@ -23,6 +23,8 @@ import ast
 
 from dotenv import load_dotenv
 from neo4j import AsyncGraphDatabase
+from typescript_analyzer import TypeScriptAnalyzer
+from supabase_analyzer import SupabaseAnalyzer, SupabaseSchemaInfo
 
 # Configure logging
 logging.basicConfig(
@@ -37,30 +39,127 @@ class Neo4jCodeAnalyzer:
     """Analyzes code for direct Neo4j insertion"""
     
     def __init__(self):
-        # External modules to ignore
+        # Initialize TypeScript analyzer
+        self.ts_analyzer = TypeScriptAnalyzer()
+        
+        # External modules to ignore for React/TypeScript ecosystem
         self.external_modules = {
-            # Python standard library
-            'os', 'sys', 'json', 'logging', 'datetime', 'pathlib', 'typing', 'collections',
-            'asyncio', 'subprocess', 'ast', 're', 'string', 'urllib', 'http', 'email',
-            'time', 'uuid', 'hashlib', 'base64', 'itertools', 'functools', 'operator',
-            'contextlib', 'copy', 'pickle', 'tempfile', 'shutil', 'glob', 'fnmatch',
-            'io', 'codecs', 'locale', 'platform', 'socket', 'ssl', 'threading', 'queue',
-            'multiprocessing', 'concurrent', 'warnings', 'traceback', 'inspect',
-            'importlib', 'pkgutil', 'types', 'weakref', 'gc', 'dataclasses', 'enum',
-            'abc', 'numbers', 'decimal', 'fractions', 'math', 'cmath', 'random', 'statistics',
+            # React ecosystem
+            'react', 'react-dom', 'react-router', 'react-router-dom', 'react-query',
+            'react-hook-form', 'react-table', 'react-select', 'react-spring', 'framer-motion',
             
-            # Common third-party libraries
-            'requests', 'urllib3', 'httpx', 'aiohttp', 'flask', 'django', 'fastapi',
-            'pydantic', 'sqlalchemy', 'alembic', 'psycopg2', 'pymongo', 'redis',
-            'celery', 'pytest', 'unittest', 'mock', 'faker', 'factory', 'hypothesis',
-            'numpy', 'pandas', 'matplotlib', 'seaborn', 'scipy', 'sklearn', 'torch',
-            'tensorflow', 'keras', 'opencv', 'pillow', 'boto3', 'botocore', 'azure',
-            'google', 'openai', 'anthropic', 'langchain', 'transformers', 'huggingface_hub',
-            'click', 'typer', 'rich', 'colorama', 'tqdm', 'python-dotenv', 'pyyaml',
-            'toml', 'configargparse', 'marshmallow', 'attrs', 'dataclasses-json',
-            'jsonschema', 'cerberus', 'voluptuous', 'schema', 'jinja2', 'mako',
-            'cryptography', 'bcrypt', 'passlib', 'jwt', 'authlib', 'oauthlib'
+            # Next.js and meta-frameworks
+            'next', 'gatsby', 'remix', '@remix-run', 'nuxt', 'vite', 'create-react-app',
+            
+            # State management
+            'redux', '@reduxjs/toolkit', 'mobx', 'zustand', 'jotai', 'recoil', 'context',
+            
+            # UI libraries
+            'antd', '@ant-design', 'material-ui', '@mui', 'chakra-ui', 'react-bootstrap',
+            'semantic-ui-react', 'styled-components', '@emotion', 'tailwindcss',
+            
+            # Utilities
+            'lodash', 'ramda', 'date-fns', 'moment', 'dayjs', 'uuid', 'classnames', 'clsx',
+            
+            # API and HTTP
+            'axios', 'fetch', 'swr', 'apollo-client', '@apollo/client', 'graphql',
+            'socket.io-client', 'ws',
+            
+            # TypeScript and build tools
+            'typescript', '@types', 'webpack', 'rollup', 'parcel', 'babel', '@babel',
+            'prettier', 'eslint', '@typescript-eslint', 'jest', '@testing-library',
+            
+            # Node.js standard libraries
+            'fs', 'path', 'os', 'crypto', 'buffer', 'stream', 'events', 'util',
+            'url', 'querystring', 'http', 'https', 'net', 'cluster', 'child_process',
+            
+            # Common Node.js packages
+            'express', 'fastify', 'koa', 'helmet', 'cors', 'morgan', 'winston',
+            'bcrypt', 'jsonwebtoken', 'passport', 'nodemailer', 'multer', 'sharp',
+            'dotenv', 'config', 'yup', 'joi', 'zod', 'class-validator'
         }
+    
+    def analyze_typescript_file(self, file_path: Path, repo_root: Path, project_modules: Set[str]) -> Dict[str, Any]:
+        """Extract React/TypeScript structure for direct Neo4j insertion"""
+        try:
+            # Use the TypeScript analyzer to parse the file
+            analysis = self.ts_analyzer.analyze_typescript_file(file_path, repo_root, project_modules)
+            if not analysis:
+                return None
+            
+            relative_path = str(file_path.relative_to(repo_root))
+            module_name = self._get_importable_module_name(file_path, repo_root, relative_path)
+            
+            # Convert TypeScript analysis to Neo4j format
+            components = []
+            functions = []
+            imports = []
+            
+            # Process React components
+            for component in analysis.components:
+                component_data = {
+                    'name': component.name,
+                    'full_name': f"{module_name}.{component.name}",
+                    'type': component.type,
+                    'props': component.props,
+                    'hooks': component.hooks,
+                    'is_exported': component.is_exported
+                }
+                components.append(component_data)
+            
+            # Process function calls as functions
+            for func_call in analysis.function_calls:
+                if func_call.object_name:
+                    # Method call
+                    function_data = {
+                        'name': func_call.function_name,
+                        'full_name': f"{func_call.object_name}.{func_call.function_name}",
+                        'args': func_call.args,
+                        'object_name': func_call.object_name,
+                        'type': 'method_call'
+                    }
+                else:
+                    # Regular function call
+                    function_data = {
+                        'name': func_call.function_name,
+                        'full_name': f"{module_name}.{func_call.function_name}",
+                        'args': func_call.args,
+                        'type': 'function_call'
+                    }
+                functions.append(function_data)
+            
+            # Process imports
+            for import_info in analysis.imports:
+                # Skip external modules
+                if import_info.module not in self.external_modules:
+                    imports.append({
+                        'module': import_info.module,
+                        'name': import_info.name,
+                        'alias': import_info.alias,
+                        'is_default': import_info.is_default_import,
+                        'is_namespace': import_info.is_namespace_import
+                    })
+            
+            return {
+                'file_path': relative_path,
+                'module_name': module_name,
+                'components': components,
+                'functions': functions,
+                'imports': imports,
+                'hook_calls': [
+                    {
+                        'name': hook.hook_name,
+                        'args': hook.args,
+                        'variable_name': hook.variable_name
+                    }
+                    for hook in analysis.hook_calls
+                ],
+                'exports': analysis.exports
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing TypeScript file {file_path}: {e}")
+            return None
     
     def analyze_python_file(self, file_path: Path, repo_root: Path, project_modules: Set[str]) -> Dict[str, Any]:
         """Extract structure for direct Neo4j insertion"""
@@ -402,6 +501,7 @@ class DirectNeo4jExtractor:
         self.neo4j_password = neo4j_password
         self.driver = None
         self.analyzer = Neo4jCodeAnalyzer()
+        self.supabase_analyzer = None
     
     async def initialize(self):
         """Initialize Neo4j connection"""
@@ -422,6 +522,9 @@ class DirectNeo4jExtractor:
             # Create constraints - using MERGE-friendly approach
             await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (f:File) REQUIRE f.path IS UNIQUE")
             await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (c:Class) REQUIRE c.full_name IS UNIQUE")
+            # Add constraints for React/TypeScript components
+            await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (comp:Component) REQUIRE comp.comp_id IS UNIQUE")
+            await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (hook:Hook) REQUIRE hook.hook_id IS UNIQUE")
             # Remove unique constraints for methods/attributes since they can be duplicated across classes
             # await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (m:Method) REQUIRE m.full_name IS UNIQUE")
             # await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (f:Function) REQUIRE f.full_name IS UNIQUE")
@@ -431,6 +534,16 @@ class DirectNeo4jExtractor:
             await session.run("CREATE INDEX IF NOT EXISTS FOR (f:File) ON (f.name)")
             await session.run("CREATE INDEX IF NOT EXISTS FOR (c:Class) ON (c.name)")
             await session.run("CREATE INDEX IF NOT EXISTS FOR (m:Method) ON (m.name)")
+            # Add indexes for React/TypeScript components
+            await session.run("CREATE INDEX IF NOT EXISTS FOR (comp:Component) ON (comp.name)")
+            await session.run("CREATE INDEX IF NOT EXISTS FOR (hook:Hook) ON (hook.name)")
+            
+            # Add constraints and indexes for Supabase schema
+            await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (t:SupabaseTable) REQUIRE t.table_id IS UNIQUE")
+            await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (f:SupabaseFunction) REQUIRE f.function_id IS UNIQUE")
+            await session.run("CREATE INDEX IF NOT EXISTS FOR (t:SupabaseTable) ON (t.name)")
+            await session.run("CREATE INDEX IF NOT EXISTS FOR (c:SupabaseColumn) ON (c.name)")
+            await session.run("CREATE INDEX IF NOT EXISTS FOR (f:SupabaseFunction) ON (f.name)")
         
         logger.info("Neo4j initialized successfully")
     
@@ -451,25 +564,36 @@ class DirectNeo4jExtractor:
                 DETACH DELETE a
             """, repo_name=repo_name)
             
-            # 2. Delete functions (they depend on files)
+            # 2. Delete React/TypeScript components and hooks
+            await session.run("""
+                MATCH (r:Repository {name: $repo_name})-[:CONTAINS]->(f:File)-[:DEFINES]->(comp:Component)
+                DETACH DELETE comp
+            """, repo_name=repo_name)
+            
+            await session.run("""
+                MATCH (r:Repository {name: $repo_name})-[:CONTAINS]->(f:File)-[:USES]->(hook:Hook)
+                DETACH DELETE hook
+            """, repo_name=repo_name)
+            
+            # 3. Delete functions (they depend on files)
             await session.run("""
                 MATCH (r:Repository {name: $repo_name})-[:CONTAINS]->(f:File)-[:DEFINES]->(func:Function)
                 DETACH DELETE func
             """, repo_name=repo_name)
             
-            # 3. Delete classes (they depend on files)
+            # 4. Delete classes (they depend on files)
             await session.run("""
                 MATCH (r:Repository {name: $repo_name})-[:CONTAINS]->(f:File)-[:DEFINES]->(c:Class)
                 DETACH DELETE c
             """, repo_name=repo_name)
             
-            # 4. Delete files (they depend on repository)
+            # 5. Delete files (they depend on repository)
             await session.run("""
                 MATCH (r:Repository {name: $repo_name})-[:CONTAINS]->(f:File)
                 DETACH DELETE f
             """, repo_name=repo_name)
             
-            # 5. Finally delete the repository
+            # 6. Finally delete the repository
             await session.run("""
                 MATCH (r:Repository {name: $repo_name})
                 DETACH DELETE r
@@ -481,6 +605,182 @@ class DirectNeo4jExtractor:
         """Close Neo4j connection"""
         if self.driver:
             await self.driver.close()
+    
+    async def analyze_supabase_schema(self, supabase_url: str, supabase_key: str, project_name: str = None) -> bool:
+        """Analyze Supabase schema and store in Neo4j"""
+        try:
+            logger.info("Analyzing Supabase schema...")
+            
+            # Initialize Supabase analyzer
+            self.supabase_analyzer = SupabaseAnalyzer(supabase_url, supabase_key)
+            
+            if not self.supabase_analyzer.connect():
+                logger.error("Failed to connect to Supabase")
+                return False
+            
+            # Analyze schema
+            schema_info = await self.supabase_analyzer.analyze_schema()
+            
+            # Store in Neo4j
+            await self._store_supabase_schema(schema_info, project_name or "supabase_project")
+            
+            logger.info(f"Successfully analyzed Supabase schema: {len(schema_info.tables)} tables, {len(schema_info.functions)} functions")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error analyzing Supabase schema: {e}")
+            return False
+    
+    async def _store_supabase_schema(self, schema_info: SupabaseSchemaInfo, project_name: str):
+        """Store Supabase schema information in Neo4j"""
+        async with self.driver.session() as session:
+            # Create project node
+            await session.run("""
+                MERGE (p:SupabaseProject {name: $project_name})
+                SET p.url = $url,
+                    p.analyzed_at = datetime(),
+                    p.table_count = $table_count,
+                    p.function_count = $function_count
+            """, project_name=project_name, url=schema_info.project_url,
+                table_count=len(schema_info.tables), function_count=len(schema_info.functions))
+            
+            # Store tables
+            for table in schema_info.tables:
+                await self._store_supabase_table(session, table, project_name)
+            
+            # Store functions
+            for function in schema_info.functions:
+                await self._store_supabase_function(session, function, project_name)
+            
+            # Store enums
+            for enum in schema_info.enums:
+                await self._store_supabase_enum(session, enum, project_name)
+    
+    async def _store_supabase_table(self, session, table_info, project_name: str):
+        """Store a Supabase table in Neo4j"""
+        table_id = f"{project_name}_{table_info.schema}_{table_info.name}"
+        
+        # Create table node
+        await session.run("""
+            MATCH (p:SupabaseProject {name: $project_name})
+            MERGE (t:SupabaseTable {table_id: $table_id})
+            SET t.name = $name,
+                t.schema = $schema,
+                t.rls_enabled = $rls_enabled,
+                t.estimated_rows = $estimated_rows,
+                t.primary_keys = $primary_keys
+            MERGE (p)-[:CONTAINS_TABLE]->(t)
+        """, project_name=project_name, table_id=table_id, name=table_info.name,
+            schema=table_info.schema, rls_enabled=table_info.rls_enabled,
+            estimated_rows=table_info.estimated_rows, primary_keys=table_info.primary_keys)
+        
+        # Store columns
+        for column in table_info.columns:
+            await self._store_supabase_column(session, column, table_id)
+        
+        # Store foreign key relationships
+        for fk in table_info.foreign_keys:
+            await self._store_foreign_key_relationship(session, fk, table_id, project_name)
+        
+        # Store RLS policies
+        for policy in table_info.policies:
+            await self._store_rls_policy(session, policy, table_id)
+    
+    async def _store_supabase_column(self, session, column_info, table_id: str):
+        """Store a Supabase column in Neo4j"""
+        column_id = f"{table_id}_{column_info.name}"
+        
+        await session.run("""
+            MATCH (t:SupabaseTable {table_id: $table_id})
+            MERGE (c:SupabaseColumn {column_id: $column_id})
+            SET c.name = $name,
+                c.data_type = $data_type,
+                c.is_nullable = $is_nullable,
+                c.default_value = $default_value,
+                c.is_primary_key = $is_primary_key,
+                c.is_foreign_key = $is_foreign_key,
+                c.max_length = $max_length,
+                c.constraints = $constraints
+            MERGE (t)-[:HAS_COLUMN]->(c)
+        """, table_id=table_id, column_id=column_id, name=column_info.name,
+            data_type=column_info.data_type, is_nullable=column_info.is_nullable,
+            default_value=column_info.default_value, is_primary_key=column_info.is_primary_key,
+            is_foreign_key=column_info.is_foreign_key, max_length=column_info.max_length,
+            constraints=column_info.constraints)
+    
+    async def _store_foreign_key_relationship(self, session, fk_info, table_id: str, project_name: str):
+        """Store foreign key relationships in Neo4j"""
+        foreign_table_id = f"{project_name}_{fk_info['foreign_table_schema']}_{fk_info['foreign_table_name']}"
+        
+        await session.run("""
+            MATCH (source_table:SupabaseTable {table_id: $source_table_id})
+            MATCH (target_table:SupabaseTable {table_id: $target_table_id})
+            MERGE (source_table)-[r:REFERENCES]->(target_table)
+            SET r.source_column = $source_column,
+                r.target_column = $target_column,
+                r.constraint_name = $constraint_name
+        """, source_table_id=table_id, target_table_id=foreign_table_id,
+            source_column=fk_info['column_name'], target_column=fk_info['foreign_column_name'],
+            constraint_name=fk_info['constraint_name'])
+    
+    async def _store_rls_policy(self, session, policy_info, table_id: str):
+        """Store RLS policies in Neo4j"""
+        policy_id = f"{table_id}_{policy_info['name']}"
+        
+        await session.run("""
+            MATCH (t:SupabaseTable {table_id: $table_id})
+            MERGE (p:RLSPolicy {policy_id: $policy_id})
+            SET p.name = $name,
+                p.permissive = $permissive,
+                p.roles = $roles,
+                p.command = $command,
+                p.qualifier = $qualifier,
+                p.with_check = $with_check
+            MERGE (t)-[:HAS_POLICY]->(p)
+        """, table_id=table_id, policy_id=policy_id, name=policy_info['name'],
+            permissive=policy_info['permissive'], roles=policy_info['roles'],
+            command=policy_info['command'], qualifier=policy_info['qualifier'],
+            with_check=policy_info['with_check'])
+    
+    async def _store_supabase_function(self, session, function_info, project_name: str):
+        """Store a Supabase function in Neo4j"""
+        function_id = f"{project_name}_{function_info.schema}_{function_info.name}"
+        
+        await session.run("""
+            MATCH (p:SupabaseProject {name: $project_name})
+            MERGE (f:SupabaseFunction {function_id: $function_id})
+            SET f.name = $name,
+                f.schema = $schema,
+                f.return_type = $return_type,
+                f.language = $language,
+                f.security_definer = $security_definer,
+                f.description = $description,
+                f.parameters = $parameters
+            MERGE (p)-[:CONTAINS_FUNCTION]->(f)
+        """, project_name=project_name, function_id=function_id, name=function_info.name,
+            schema=function_info.schema, return_type=function_info.return_type,
+            language=function_info.language, security_definer=function_info.security_definer,
+            description=function_info.description, parameters=[
+                {
+                    'name': param.get('name'),
+                    'type': param.get('type'),
+                    'mode': param.get('mode'),
+                    'position': param.get('position')
+                } for param in function_info.parameters
+            ])
+    
+    async def _store_supabase_enum(self, session, enum_info, project_name: str):
+        """Store a Supabase enum in Neo4j"""
+        enum_id = f"{project_name}_{enum_info['name']}"
+        
+        await session.run("""
+            MATCH (p:SupabaseProject {name: $project_name})
+            MERGE (e:SupabaseEnum {enum_id: $enum_id})
+            SET e.name = $name,
+                e.values = $values
+            MERGE (p)-[:CONTAINS_ENUM]->(e)
+        """, project_name=project_name, enum_id=enum_id, 
+            name=enum_info['name'], values=enum_info['values'])
     
     def clone_repo(self, repo_url: str, target_dir: str) -> str:
         """Clone repository with shallow clone"""
@@ -506,29 +806,66 @@ class DirectNeo4jExtractor:
         return target_dir
     
     def get_python_files(self, repo_path: str) -> List[Path]:
-        """Get Python files, focusing on main source directories"""
-        python_files = []
-        exclude_dirs = {
-            'tests', 'test', '__pycache__', '.git', 'venv', 'env',
-            'node_modules', 'build', 'dist', '.pytest_cache', 'docs',
-            'examples', 'example', 'demo', 'benchmark'
-        }
+        """Get Python files, focusing only on src/ directory for local repositories"""
+        source_files = []
         
-        for root, dirs, files in os.walk(repo_path):
-            dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith('.')]
+        # For local analysis, focus only on src/ directory
+        src_path = Path(repo_path) / 'src'
+        if not src_path.exists():
+            logger.warning(f"No src/ directory found in {repo_path}")
+            return source_files
+        
+        # Only process files in src/ and its subdirectories
+        for root, dirs, files in os.walk(str(src_path)):
+            # Skip hidden directories and common non-source dirs within src/
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in {'__pycache__', 'test', 'tests'}]
             
             for file in files:
-                if file.endswith('.py') and not file.startswith('test_'):
+                if (file.endswith('.py') and 
+                    not file.startswith('test') and 
+                    not file.endswith(('_test.py', '_tests.py', 'test_.py'))):
+                    file_path = Path(root) / file
+                    if file_path.stat().st_size < 500_000:
+                        source_files.append(file_path)
+        
+        return source_files
+    
+    def get_react_typescript_files(self, repo_path: str) -> List[Path]:
+        """Get React/TypeScript files, focusing only on src/ directory for local repositories"""
+        source_files = []
+        
+        # For local analysis, focus only on src/ directory
+        src_path = Path(repo_path) / 'src'
+        if not src_path.exists():
+            logger.warning(f"No src/ directory found in {repo_path}")
+            return source_files
+        
+        # Only process files in src/ and its subdirectories
+        for root, dirs, files in os.walk(str(src_path)):
+            # Skip hidden directories and common non-source dirs within src/
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in {'__pycache__', 'test', 'tests', '__tests__'}]
+            
+            for file in files:
+                if (file.endswith(('.ts', '.tsx', '.js', '.jsx')) and 
+                    not file.startswith('test') and 
+                    not file.endswith(('.test.ts', '.test.tsx', '.test.js', '.test.jsx', 
+                                     '.spec.ts', '.spec.tsx', '.spec.js', '.spec.jsx'))):
                     file_path = Path(root) / file
                     if (file_path.stat().st_size < 500_000 and 
-                        file not in ['setup.py', 'conftest.py']):
-                        python_files.append(file_path)
+                        file not in ['webpack.config.js', 'vite.config.ts', 'next.config.js',
+                                   'tailwind.config.js', 'jest.config.js', 'babel.config.js']):
+                        source_files.append(file_path)
         
-        return python_files
+        return source_files
     
     async def analyze_repository(self, repo_url: str, temp_dir: str = None):
         """Analyze repository and create nodes/relationships in Neo4j"""
-        repo_name = repo_url.split('/')[-1].replace('.git', '')
+        # Safely extract repo name, handling both strings and potential tuples
+        if isinstance(repo_url, str):
+            repo_name = repo_url.split('/')[-1].replace('.git', '')
+        else:
+            # If repo_url is somehow not a string, convert it first
+            repo_name = str(repo_url).split('/')[-1].replace('.git', '')
         logger.info(f"Analyzing repository: {repo_name}")
         
         # Clear existing data for this repository before re-processing
@@ -543,27 +880,45 @@ class DirectNeo4jExtractor:
         repo_path = Path(self.clone_repo(repo_url, temp_dir))
         
         try:
-            logger.info("Getting Python files...")
+            logger.info("Getting React/TypeScript files...")
+            source_files = self.get_react_typescript_files(str(repo_path))
+            logger.info(f"Found {len(source_files)} React/TypeScript files to analyze")
+            
+            # Also get Python files for mixed projects
             python_files = self.get_python_files(str(repo_path))
             logger.info(f"Found {len(python_files)} Python files to analyze")
             
             # First pass: identify project modules
             logger.info("Identifying project modules...")
             project_modules = set()
-            for file_path in python_files:
+            for file_path in source_files:
                 relative_path = str(file_path.relative_to(repo_path))
-                module_parts = relative_path.replace('/', '.').replace('.py', '').split('.')
+                module_parts = relative_path.replace('/', '.')
+                # Remove file extensions one by one
+                for ext in ['.ts', '.tsx', '.js', '.jsx']:
+                    module_parts = module_parts.replace(ext, '')
+                module_parts = module_parts.split('.')
                 if len(module_parts) > 0 and not module_parts[0].startswith('.'):
                     project_modules.add(module_parts[0])
             
             logger.info(f"Identified project modules: {sorted(project_modules)}")
             
             # Second pass: analyze files and collect data
-            logger.info("Analyzing Python files...")
+            logger.info("Analyzing React/TypeScript files...")
             modules_data = []
+            for i, file_path in enumerate(source_files):
+                if i % 20 == 0:
+                    logger.info(f"Analyzing file {i+1}/{len(source_files)}: {file_path.name}")
+                
+                analysis = self.analyzer.analyze_typescript_file(file_path, repo_path, project_modules)
+                if analysis:
+                    modules_data.append(analysis)
+            
+            # Analyze Python files too
+            logger.info("Analyzing Python files...")
             for i, file_path in enumerate(python_files):
                 if i % 20 == 0:
-                    logger.info(f"Analyzing file {i+1}/{len(python_files)}: {file_path.name}")
+                    logger.info(f"Analyzing Python file {i+1}/{len(python_files)}: {file_path.name}")
                 
                 analysis = self.analyzer.analyze_python_file(file_path, repo_path, project_modules)
                 if analysis:
@@ -610,176 +965,225 @@ class DirectNeo4jExtractor:
                     # Don't fail the whole process due to cleanup issues
     
     async def _create_graph(self, repo_name: str, modules_data: List[Dict]):
-        """Create all nodes and relationships in Neo4j"""
+        """Create all nodes and relationships in Neo4j with proper error handling"""
         
         async with self.driver.session() as session:
-            # Create Repository node
-            await session.run(
-                "CREATE (r:Repository {name: $repo_name, created_at: datetime()})",
-                repo_name=repo_name
-            )
-            
-            nodes_created = 0
-            relationships_created = 0
-            
-            for i, mod in enumerate(modules_data):
-                # 1. Create File node
-                await session.run("""
-                    CREATE (f:File {
-                        name: $name,
-                        path: $path,
-                        module_name: $module_name,
-                        line_count: $line_count,
-                        created_at: datetime()
-                    })
-                """, 
-                    name=mod['file_path'].split('/')[-1],
-                    path=mod['file_path'],
-                    module_name=mod['module_name'],
-                    line_count=mod['line_count']
+            try:
+                # Create Repository node
+                await session.run(
+                    "CREATE (r:Repository {name: $repo_name, created_at: datetime()})",
+                    repo_name=repo_name
                 )
-                nodes_created += 1
+                logger.info(f"Created Repository node for {repo_name}")
                 
-                # 2. Connect File to Repository
-                await session.run("""
-                    MATCH (r:Repository {name: $repo_name})
-                    MATCH (f:File {path: $file_path})
-                    CREATE (r)-[:CONTAINS]->(f)
-                """, repo_name=repo_name, file_path=mod['file_path'])
-                relationships_created += 1
+                nodes_created = 0
+                relationships_created = 0
                 
-                # 3. Create Class nodes and relationships
-                for cls in mod['classes']:
-                    # Create Class node using MERGE to avoid duplicates
-                    await session.run("""
-                        MERGE (c:Class {full_name: $full_name})
-                        ON CREATE SET c.name = $name, c.created_at = datetime()
-                    """, name=cls['name'], full_name=cls['full_name'])
-                    nodes_created += 1
-                    
-                    # Connect File to Class
-                    await session.run("""
-                        MATCH (f:File {path: $file_path})
-                        MATCH (c:Class {full_name: $class_full_name})
-                        MERGE (f)-[:DEFINES]->(c)
-                    """, file_path=mod['file_path'], class_full_name=cls['full_name'])
-                    relationships_created += 1
-                    
-                    # 4. Create Method nodes - use MERGE to avoid duplicates
-                    for method in cls['methods']:
-                        method_full_name = f"{cls['full_name']}.{method['name']}"
-                        # Create method with unique ID to avoid conflicts
-                        method_id = f"{cls['full_name']}::{method['name']}"
-                        
+                for i, mod in enumerate(modules_data):
+                    try:
+                        # 1. Create File node
                         await session.run("""
-                            MERGE (m:Method {method_id: $method_id})
-                            ON CREATE SET m.name = $name, 
-                                         m.full_name = $full_name,
-                                         m.args = $args,
-                                         m.params_list = $params_list,
-                                         m.params_detailed = $params_detailed,
-                                         m.return_type = $return_type,
-                                         m.created_at = datetime()
+                            CREATE (f:File {
+                                name: $name,
+                                path: $path,
+                                module_name: $module_name,
+                                line_count: $line_count,
+                                created_at: datetime()
+                            })
                         """, 
-                            name=method['name'], 
-                            full_name=method_full_name,
-                            method_id=method_id,
-                            args=method['args'],
-                            params_list=[f"{p['name']}:{p['type']}" for p in method['params']],  # Simple format
-                            params_detailed=method.get('params_detailed', []),  # Detailed format
-                            return_type=method['return_type']
+                            name=str(mod['file_path']).split('/')[-1],
+                            path=mod['file_path'],
+                            module_name=mod['module_name'],
+                            line_count=mod.get('line_count', 0)
                         )
                         nodes_created += 1
                         
-                        # Connect Class to Method
+                        # 2. Connect File to Repository
                         await session.run("""
-                            MATCH (c:Class {full_name: $class_full_name})
-                            MATCH (m:Method {method_id: $method_id})
-                            MERGE (c)-[:HAS_METHOD]->(m)
-                        """, 
-                            class_full_name=cls['full_name'], 
-                            method_id=method_id
-                        )
+                            MATCH (r:Repository {name: $repo_name})
+                            MATCH (f:File {path: $file_path})
+                            CREATE (r)-[:CONTAINS]->(f)
+                        """, repo_name=repo_name, file_path=mod['file_path'])
                         relationships_created += 1
-                    
-                    # 5. Create Attribute nodes - use MERGE to avoid duplicates
-                    for attr in cls['attributes']:
-                        attr_full_name = f"{cls['full_name']}.{attr['name']}"
-                        # Create attribute with unique ID to avoid conflicts
-                        attr_id = f"{cls['full_name']}::{attr['name']}"
-                        await session.run("""
-                            MERGE (a:Attribute {attr_id: $attr_id})
-                            ON CREATE SET a.name = $name,
-                                         a.full_name = $full_name,
-                                         a.type = $type,
-                                         a.created_at = datetime()
-                        """, 
-                            name=attr['name'], 
-                            full_name=attr_full_name,
-                            attr_id=attr_id,
-                            type=attr['type']
-                        )
-                        nodes_created += 1
                         
-                        # Connect Class to Attribute
-                        await session.run("""
-                            MATCH (c:Class {full_name: $class_full_name})
-                            MATCH (a:Attribute {attr_id: $attr_id})
-                            MERGE (c)-[:HAS_ATTRIBUTE]->(a)
-                        """, 
-                            class_full_name=cls['full_name'], 
-                            attr_id=attr_id
-                        )
-                        relationships_created += 1
-                
-                # 6. Create Function nodes (top-level) - use MERGE to avoid duplicates
-                for func in mod['functions']:
-                    func_id = f"{mod['file_path']}::{func['name']}"
-                    await session.run("""
-                        MERGE (f:Function {func_id: $func_id})
-                        ON CREATE SET f.name = $name,
-                                     f.full_name = $full_name,
-                                     f.args = $args,
-                                     f.params_list = $params_list,
-                                     f.params_detailed = $params_detailed,
-                                     f.return_type = $return_type,
-                                     f.created_at = datetime()
-                    """, 
-                        name=func['name'], 
-                        full_name=func['full_name'],
-                        func_id=func_id,
-                        args=func['args'],
-                        params_list=func.get('params_list', []),  # Simple format for backwards compatibility
-                        params_detailed=func.get('params_detailed', []),  # Detailed format
-                        return_type=func['return_type']
-                    )
-                    nodes_created += 1
+                        # 3. Create Class nodes and relationships
+                        for cls in mod.get('classes', []):
+                            # Create Class node
+                            await session.run("""
+                                MERGE (c:Class {full_name: $full_name})
+                                ON CREATE SET c.name = $name, c.created_at = datetime()
+                            """, name=cls['name'], full_name=cls['full_name'])
+                            nodes_created += 1
+                            
+                            # Connect File to Class
+                            await session.run("""
+                                MATCH (f:File {path: $file_path})
+                                MATCH (c:Class {full_name: $class_full_name})
+                                MERGE (f)-[:DEFINES]->(c)
+                            """, file_path=mod['file_path'], class_full_name=cls['full_name'])
+                            relationships_created += 1
+                            
+                            # Create Method nodes with enhanced parameters
+                            for method in cls.get('methods', []):
+                                method_id = f"{cls['full_name']}::{method['name']}"
+                                await session.run("""
+                                    MERGE (m:Method {method_id: $method_id})
+                                    ON CREATE SET m.name = $name, 
+                                                 m.full_name = $full_name,
+                                                 m.args = $args,
+                                                 m.params_list = $params_list,
+                                                 m.params_detailed = $params_detailed,
+                                                 m.return_type = $return_type,
+                                                 m.created_at = datetime()
+                                """, 
+                                    name=method['name'], 
+                                    full_name=f"{cls['full_name']}.{method['name']}",
+                                    method_id=method_id,
+                                    args=method.get('args', []),
+                                    params_list=method.get('params_list', []),
+                                    params_detailed=method.get('params_detailed', []),
+                                    return_type=method.get('return_type', 'Any')
+                                )
+                                nodes_created += 1
+                                
+                                # Connect Class to Method
+                                await session.run("""
+                                    MATCH (c:Class {full_name: $class_full_name})
+                                    MATCH (m:Method {method_id: $method_id})
+                                    MERGE (c)-[:HAS_METHOD]->(m)
+                                """, 
+                                    class_full_name=cls['full_name'], 
+                                    method_id=method_id
+                                )
+                                relationships_created += 1
+                            
+                            # Create Attribute nodes for Python classes
+                            for attr in cls.get('attributes', []):
+                                attr_id = f"{cls['full_name']}::{attr['name']}"
+                                await session.run("""
+                                    MERGE (a:Attribute {attr_id: $attr_id})
+                                    ON CREATE SET a.name = $name,
+                                                 a.full_name = $full_name,
+                                                 a.type = $type,
+                                                 a.created_at = datetime()
+                                """,
+                                    name=attr['name'],
+                                    full_name=f"{cls['full_name']}.{attr['name']}",
+                                    attr_id=attr_id,
+                                    type=attr.get('type', 'Any')
+                                )
+                                nodes_created += 1
+                                
+                                # Connect Class to Attribute
+                                await session.run("""
+                                    MATCH (c:Class {full_name: $class_full_name})
+                                    MATCH (a:Attribute {attr_id: $attr_id})
+                                    MERGE (c)-[:HAS_ATTRIBUTE]->(a)
+                                """,
+                                    class_full_name=cls['full_name'],
+                                    attr_id=attr_id
+                                )
+                                relationships_created += 1
+                        
+                        # 4. Create Function nodes with enhanced parameters
+                        for func in mod.get('functions', []):
+                            func_id = f"{mod['file_path']}::{func['name']}"
+                            await session.run("""
+                                MERGE (f:Function {func_id: $func_id})
+                                ON CREATE SET f.name = $name,
+                                             f.full_name = $full_name,
+                                             f.args = $args,
+                                             f.params_list = $params_list,
+                                             f.params_detailed = $params_detailed,
+                                             f.return_type = $return_type,
+                                             f.created_at = datetime()
+                            """, 
+                                name=func['name'], 
+                                full_name=func['full_name'],
+                                func_id=func_id,
+                                args=func.get('args', []),
+                                params_list=func.get('params_list', []),
+                                params_detailed=func.get('params_detailed', []),
+                                return_type=func.get('return_type', 'Any')
+                            )
+                            nodes_created += 1
+                            
+                            # Connect File to Function
+                            await session.run("""
+                                MATCH (file:File {path: $file_path})
+                                MATCH (func:Function {func_id: $func_id})
+                                MERGE (file)-[:DEFINES]->(func)
+                            """, file_path=mod['file_path'], func_id=func_id)
+                            relationships_created += 1
+                        
+                        # 5. Create React Component nodes (for TypeScript/JavaScript files)
+                        for comp in mod.get('components', []):
+                            comp_id = f"{mod['file_path']}::{comp['name']}"
+                            await session.run("""
+                                MERGE (c:Component {comp_id: $comp_id})
+                                ON CREATE SET c.name = $name,
+                                             c.full_name = $full_name,
+                                             c.type = $type,
+                                             c.props = $props,
+                                             c.hooks = $hooks,
+                                             c.is_exported = $is_exported,
+                                             c.created_at = datetime()
+                            """,
+                                name=comp['name'],
+                                full_name=comp['full_name'],
+                                comp_id=comp_id,
+                                type=comp.get('type', 'function'),
+                                props=comp.get('props', []),
+                                hooks=comp.get('hooks', []),
+                                is_exported=comp.get('is_exported', False)
+                            )
+                            nodes_created += 1
+                            
+                            # Connect File to Component
+                            await session.run("""
+                                MATCH (file:File {path: $file_path})
+                                MATCH (comp:Component {comp_id: $comp_id})
+                                MERGE (file)-[:DEFINES]->(comp)
+                            """, file_path=mod['file_path'], comp_id=comp_id)
+                            relationships_created += 1
+                        
+                        # 6. Create Hook usage nodes (for TypeScript/JavaScript files)
+                        for hook in mod.get('hook_calls', []):
+                            hook_id = f"{mod['file_path']}::{hook['name']}::{hash(str(hook))}"
+                            await session.run("""
+                                MERGE (h:Hook {hook_id: $hook_id})
+                                ON CREATE SET h.name = $name,
+                                             h.args = $args,
+                                             h.variable_name = $variable_name,
+                                             h.created_at = datetime()
+                            """,
+                                name=hook['name'],
+                                hook_id=hook_id,
+                                args=hook.get('args', []),
+                                variable_name=hook.get('variable_name')
+                            )
+                            nodes_created += 1
+                            
+                            # Connect File to Hook
+                            await session.run("""
+                                MATCH (file:File {path: $file_path})
+                                MATCH (hook:Hook {hook_id: $hook_id})
+                                MERGE (file)-[:USES]->(hook)
+                            """, file_path=mod['file_path'], hook_id=hook_id)
+                            relationships_created += 1
+                        
+                        if (i + 1) % 10 == 0:
+                            logger.info(f"Processed {i + 1}/{len(modules_data)} files...")
                     
-                    # Connect File to Function
-                    await session.run("""
-                        MATCH (file:File {path: $file_path})
-                        MATCH (func:Function {func_id: $func_id})
-                        MERGE (file)-[:DEFINES]->(func)
-                    """, file_path=mod['file_path'], func_id=func_id)
-                    relationships_created += 1
+                    except Exception as e:
+                        logger.error(f"Failed to process file {mod.get('file_path', 'unknown')}: {e}")
+                        continue
                 
-                # 7. Create Import relationships
-                for import_name in mod['imports']:
-                    # Try to find the target file
-                    await session.run("""
-                        MATCH (source:File {path: $source_path})
-                        OPTIONAL MATCH (target:File) 
-                        WHERE target.module_name = $import_name OR target.module_name STARTS WITH $import_name
-                        WITH source, target
-                        WHERE target IS NOT NULL
-                        MERGE (source)-[:IMPORTS]->(target)
-                    """, source_path=mod['file_path'], import_name=import_name)
-                    relationships_created += 1
-                
-                if (i + 1) % 10 == 0:
-                    logger.info(f"Processed {i + 1}/{len(modules_data)} files...")
+                logger.info(f"Created {nodes_created} nodes and {relationships_created} relationships")
             
-            logger.info(f"Created {nodes_created} nodes and {relationships_created} relationships")
+            except Exception as e:
+                logger.error(f"Failed to create graph for {repo_name}: {e}")
+                raise
     
     async def search_graph(self, query_type: str, **kwargs):
         """Search the Neo4j graph directly"""

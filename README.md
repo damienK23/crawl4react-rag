@@ -1,10 +1,10 @@
-<h1 align="center">Crawl4AI RAG MCP Server</h1>
+<h1 align="center">MCP Crawl4React RAG Server</h1>
 
 <p align="center">
-  <em>Web Crawling and RAG Capabilities for AI Agents and AI Coding Assistants</em>
+  <em>Web Crawling and RAG Capabilities for React Applications and AI Coding Assistants</em>
 </p>
 
-A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com) and [Supabase](https://supabase.com/) for providing AI agents and AI coding assistants with advanced web crawling and RAG capabilities.
+A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com) and [Supabase](https://supabase.com/) for providing React applications and AI coding assistants with advanced web crawling and RAG capabilities.
 
 With this MCP server, you can <b>scrape anything</b> and then <b>use that knowledge anywhere</b> for RAG.
 
