@@ -11,7 +11,7 @@ from pathlib import Path
 def auto_cleanup():
     """Nettoyage automatique sans confirmation"""
     
-    base_path = Path("/Users/kwenji/mcp-crawl4ai-rag")
+    base_path = Path("/Users/kwenji/mcp-crawl4react-rag")
     
     print("🧹 NETTOYAGE AUTOMATIQUE EN COURS...")
     print("=" * 50)
@@ -107,14 +107,14 @@ def auto_cleanup():
 def show_final_clean_structure():
     """Afficher la structure nettoyée finale"""
     
-    base_path = Path("/Users/kwenji/mcp-crawl4ai-rag")
+    base_path = Path("/Users/kwenji/mcp-crawl4react-rag")
     
     print("\n📁 STRUCTURE FINALE NETTOYÉE")
     print("=" * 40)
     
     # Fichiers principaux conservés
     core_files = [
-        "src/crawl4ai_mcp.py",
+        "src/crawl4react_mcp.py",
         "src/HallucinationChecker.tsx", 
         "src/example-usage.tsx",
         "knowledge_graphs/comprehensive_validator.py",
@@ -158,7 +158,7 @@ def show_final_clean_structure():
             print(f"   📁 {dir_name}/ ({file_count} fichiers)")
     
     print("\n🎯 FONCTIONNALITÉS CONSERVÉES:")
-    print("   ✅ Serveur MCP principal (crawl4ai_mcp.py)")
+    print("   ✅ Serveur MCP principal (crawl4react_mcp.py)")
     print("   ✅ Validation complète d'hallucinations IA")
     print("   ✅ Validation RPC avancée (5 améliorations)")
     print("   ✅ Analyseur TypeScript/React")
@@ -174,7 +174,7 @@ def show_final_clean_structure():
     print("   ❌ Node.js modules non utilisés")
     
     print("\n💡 UTILISATION:")
-    print(f"   • MCP Server: python src/crawl4ai_mcp.py")
+    print(f"   • MCP Server: python src/crawl4react_mcp.py")
     print(f"   • Validation: python test_realistic_validation.py") 
     print(f"   • Neo4j: python clear_neo4j_repository.py --show-structure")
 

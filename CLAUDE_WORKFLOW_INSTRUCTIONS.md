@@ -279,7 +279,7 @@ def validate_continuously():
         
         # Valider tous les fichiers modifiés
         result = subprocess.run([
-            "python", "src/crawl4ai_mcp.py",
+            "python", "src/crawl4react_mcp.py",
             "--tool", "comprehensive_validation",
             "--file", "src/"
         ], capture_output=True, text=True)
@@ -307,7 +307,7 @@ if __name__ == "__main__":
 echo "🔍 Validation MCP avant commit..."
 
 # Valider avec MCP
-python src/crawl4ai_mcp.py --tool comprehensive_validation --file src/
+python src/crawl4react_mcp.py --tool comprehensive_validation --file src/
 
 if [ $? -eq 0 ]; then
     echo "✅ Validation MCP réussie - Commit autorisé"

@@ -12,7 +12,7 @@ from pathlib import Path
 def cleanup_database_scripts():
     """Nettoyer les scripts de base de données non nécessaires"""
     
-    base_path = Path("/Users/kwenji/mcp-crawl4ai-rag")
+    base_path = Path("/Users/kwenji/mcp-crawl4react-rag")
     
     print("🧹 NETTOYAGE DES SCRIPTS DE BASE DE DONNÉES")
     print("=" * 60)
@@ -114,7 +114,7 @@ def cleanup_database_scripts():
 def cleanup_test_files():
     """Nettoyer les fichiers de test redondants"""
     
-    base_path = Path("/Users/kwenji/mcp-crawl4ai-rag")
+    base_path = Path("/Users/kwenji/mcp-crawl4react-rag")
     
     print("\n🧪 NETTOYAGE DES FICHIERS DE TEST REDONDANTS")
     print("=" * 60)
@@ -145,7 +145,7 @@ def cleanup_test_files():
 def cleanup_documentation():
     """Nettoyer la documentation redondante"""
     
-    base_path = Path("/Users/kwenji/mcp-crawl4ai-rag")
+    base_path = Path("/Users/kwenji/mcp-crawl4react-rag")
     
     print("\n📚 NETTOYAGE DE LA DOCUMENTATION REDONDANTE")
     print("=" * 60)
@@ -172,13 +172,13 @@ def cleanup_documentation():
 def show_final_structure():
     """Afficher la structure finale nettoyée"""
     
-    base_path = Path("/Users/kwenji/mcp-crawl4ai-rag")
+    base_path = Path("/Users/kwenji/mcp-crawl4react-rag")
     
     print("\n📁 STRUCTURE FINALE NETTOYÉE")
     print("=" * 50)
     
     important_files = [
-        "src/crawl4ai_mcp.py",
+        "src/crawl4react_mcp.py",
         "knowledge_graphs/comprehensive_validator.py",
         "knowledge_graphs/rpc_parameter_validator.py",
         "knowledge_graphs/typescript_analyzer.py",
@@ -210,10 +210,10 @@ def show_final_structure():
 def create_minimal_package_json():
     """Créer un package.json minimal si nécessaire pour certains outils"""
     
-    base_path = Path("/Users/kwenji/mcp-crawl4ai-rag")
+    base_path = Path("/Users/kwenji/mcp-crawl4react-rag")
     
     minimal_package = {
-        "name": "mcp-crawl4ai-rag",
+        "name": "mcp-crawl4react-rag",
         "version": "1.0.0",
         "description": "MCP Crawl4AI RAG with AI hallucination detection",
         "private": True,
@@ -273,7 +273,7 @@ if __name__ == "__main__":
     print("   • Intégration MCP")
     print("   • Parser Neo4j avec hiérarchie propre")
     print("\n📋 FICHIERS PRINCIPAUX CONSERVÉS:")
-    print("   • src/crawl4ai_mcp.py - Serveur MCP principal")
+    print("   • src/crawl4react_mcp.py - Serveur MCP principal")
     print("   • knowledge_graphs/comprehensive_validator.py - Validation complète")
     print("   • knowledge_graphs/rpc_parameter_validator.py - Validation RPC avancée")
     print("   • test_files/ - Exemples de test")

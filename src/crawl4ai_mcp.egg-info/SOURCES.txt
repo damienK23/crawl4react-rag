@@ -1,0 +1,10 @@
+LICENSE
+README.md
+pyproject.toml
+src/crawl4ai_mcp.py
+src/utils.py
+src/crawl4ai_mcp.egg-info/PKG-INFO
+src/crawl4ai_mcp.egg-info/SOURCES.txt
+src/crawl4ai_mcp.egg-info/dependency_links.txt
+src/crawl4ai_mcp.egg-info/requires.txt
+src/crawl4ai_mcp.egg-info/top_level.txt

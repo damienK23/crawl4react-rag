@@ -249,7 +249,7 @@ export default SearchComponent
 1. **Démarrer le serveur MCP** :
    ```bash
    cd mcp-crawl4react-rag
-   python -m src.crawl4ai_mcp
+   python -m src.crawl4react_mcp
    ```
 
 2. **Démarrer votre application React** :

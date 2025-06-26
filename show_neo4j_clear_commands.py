@@ -58,8 +58,8 @@ ORDER BY f.name
 print("\n💡 EXEMPLE D'ARBORESCENCE SOUHAITÉE :")
 print("=" * 50)
 print("""
-Repository: mcp-crawl4ai-rag
-├── File: src/crawl4ai_mcp.py
+Repository: mcp-crawl4react-rag
+├── File: src/crawl4react_mcp.py
 │   ├── Class: Crawl4AIContext
 │   │   ├── Method: __init__
 │   │   ├── Method: initialize

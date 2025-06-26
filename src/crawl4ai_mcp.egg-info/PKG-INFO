@@ -1,10 +1,26 @@
-<h1 align="center">MCP Crawl4React RAG Server</h1>
+Metadata-Version: 2.4
+Name: crawl4ai-mcp
+Version: 0.1.0
+Summary: MCP server for integrating web crawling and RAG into AI agents and AI coding assistants
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: crawl4ai==0.6.2
+Requires-Dist: mcp==1.7.1
+Requires-Dist: supabase==2.15.1
+Requires-Dist: openai==1.71.0
+Requires-Dist: dotenv==0.9.9
+Requires-Dist: sentence-transformers>=4.1.0
+Requires-Dist: neo4j>=5.28.1
+Dynamic: license-file
+
+<h1 align="center">Crawl4AI RAG MCP Server</h1>
 
 <p align="center">
-  <em>Web Crawling and RAG Capabilities for React Applications and AI Coding Assistants</em>
+  <em>Web Crawling and RAG Capabilities for AI Agents and AI Coding Assistants</em>
 </p>
 
-A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com) and [Supabase](https://supabase.com/) for providing React applications and AI coding assistants with advanced web crawling and RAG capabilities.
+A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com) and [Supabase](https://supabase.com/) for providing AI agents and AI coding assistants with advanced web crawling and RAG capabilities.
 
 With this MCP server, you can <b>scrape anything</b> and then <b>use that knowledge anywhere</b> for RAG.
 
@@ -83,8 +99,8 @@ The server provides essential web crawling and search tools:
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/coleam00/mcp-crawl4react-rag.git
-   cd mcp-crawl4react-rag
+   git clone https://github.com/coleam00/mcp-crawl4ai-rag.git
+   cd mcp-crawl4ai-rag
    ```
 
 2. Build the Docker image:
@@ -98,8 +114,8 @@ The server provides essential web crawling and search tools:
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/coleam00/mcp-crawl4react-rag.git
-   cd mcp-crawl4react-rag
+   git clone https://github.com/coleam00/mcp-crawl4ai-rag.git
+   cd mcp-crawl4ai-rag
    ```
 
 2. Install uv if you don't have it:
@@ -310,7 +326,7 @@ docker run --env-file .env -p 8051:8051 mcp/crawl4ai-rag
 ### Using Python
 
 ```bash
-uv run src/crawl4react_mcp.py
+uv run src/crawl4ai_mcp.py
 ```
 
 The server will start and listen on the configured host and port.
@@ -360,7 +376,7 @@ Add this server to your MCP configuration for Claude Desktop, Windsurf, or any o
   "mcpServers": {
     "crawl4ai-rag": {
       "command": "python",
-      "args": ["path/to/crawl4ai-mcp/src/crawl4react_mcp.py"],
+      "args": ["path/to/crawl4ai-mcp/src/crawl4ai_mcp.py"],
       "env": {
         "TRANSPORT": "stdio",
         "OPENAI_API_KEY": "your_openai_api_key",

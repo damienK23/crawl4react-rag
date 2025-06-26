@@ -7,9 +7,9 @@ Ce projet a été nettoyé et optimisé pour se concentrer uniquement sur **l'an
 ## 📁 Structure Simplifiée
 
 ```
-mcp-crawl4ai-rag/
+mcp-crawl4react-rag/
 ├── src/                                 # Code source principal
-│   ├── crawl4ai_mcp.py                 # ⭐ Serveur MCP principal
+│   ├── crawl4react_mcp.py                 # ⭐ Serveur MCP principal
 │   ├── HallucinationChecker.tsx        # Composant React de validation
 │   ├── example-usage.tsx               # Exemples d'utilisation
 │   └── utils.py                        # Utilitaires
@@ -62,7 +62,7 @@ mcp-crawl4ai-rag/
 
 ### 1. **Serveur MCP Principal**
 ```bash
-python src/crawl4ai_mcp.py
+python src/crawl4react_mcp.py
 ```
 
 ### 2. **Test de Validation Complète**

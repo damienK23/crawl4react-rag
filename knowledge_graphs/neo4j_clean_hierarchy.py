@@ -212,7 +212,7 @@ class CleanHierarchyParser:
         """Parser un fichier individuel avec hiérarchie claire"""
         
         # Créer l'ID unique du fichier  
-        relative_path = str(file_path).replace(f"/Users/kwenji/mcp-crawl4ai-rag/", "")
+        relative_path = str(file_path).replace(f"/Users/kwenji/mcp-crawl4react-rag/", "")
         file_id = f"{repo_name}::{relative_path}"
         
         async with self.driver.session() as session:
@@ -601,6 +601,6 @@ if __name__ == "__main__":
     # Test avec le repository local
     asyncio.run(clean_parse_repository(
         repo_url="local",
-        repo_name="mcp-crawl4ai-rag", 
-        local_path="/Users/kwenji/mcp-crawl4ai-rag"
+        repo_name="mcp-crawl4react-rag", 
+        local_path="/Users/kwenji/mcp-crawl4react-rag"
     ))

@@ -42,7 +42,7 @@ async def test_clean_hierarchy():
             await session.run("MATCH (n) WHERE n.file_id CONTAINS 'test-hierarchy' DETACH DELETE n")
         
         # Test sur le dossier test_files/
-        test_path = Path("/Users/kwenji/mcp-crawl4ai-rag/test_files")
+        test_path = Path("/Users/kwenji/mcp-crawl4react-rag/test_files")
         
         if not test_path.exists():
             print(f"❌ Test path not found: {test_path}")
